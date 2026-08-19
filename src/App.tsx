@@ -5,6 +5,7 @@ import {
   ClipboardList,
   Crown,
   Eye,
+  HelpCircle,
   Layers,
   Menu,
   RotateCcw,
@@ -12,200 +13,33 @@ import {
   Shuffle,
   Sparkles,
   Trophy,
+  Undo2,
   Users,
   Volume2,
   VolumeX,
   X,
   Zap,
 } from "lucide-react";
+import {
+  type Cell,
+  type GameState,
+  clonePlayers,
+  completeTurn,
+  createRound,
+  determineStarter,
+  drawFromDeck,
+  emptyGame,
+  getCardLabel,
+  replaceGridCard,
+  revealGridCard,
+  sortByTotal,
+  unrevealedCount,
+  visibleScore,
+} from "./game";
+import { type AiLevel, type AiTurnPlan, think } from "./ai/engine";
 
-type Card = { id: string; value: number };
-type Cell = { card: Card | null; revealed: boolean; cleared?: boolean };
-
-type Player = {
-  id: string;
-  name: string;
-  isHuman: boolean;
-  grid: Cell[];
-  total: number;
-  rawRoundScore: number;
-  roundScore: number;
-  penalty: boolean;
-  finalTurnTaken: boolean;
-};
-
-type Phase =
-  | "setup"
-  | "initialReveal"
-  | "chooseSource"
-  | "drawDecision"
-  | "replaceChoice"
-  | "revealChoice"
-  | "roundOver"
-  | "gameOver";
-
-type RoundScore = {
-  playerId: string;
-  name: string;
-  raw: number;
-  applied: number;
-  total: number;
-  penalty: boolean;
-};
-
-type RoundRecord = { round: number; endingPlayerId: string | null; scores: RoundScore[] };
-type PendingSource = "deck" | "discard" | null;
-type SettingsState = { aiCount: number; targetScore: number };
-type ClearEvent = { playerName: string; columns: { col: number; value: number }[] };
+type SettingsState = { aiCount: number; targetScore: number; difficulty: AiLevel };
 type Sfx = "draw" | "flip" | "replace" | "clear" | "win" | "lose" | "shuffle";
-
-type GameState = {
-  phase: Phase;
-  players: Player[];
-  deck: Card[];
-  discard: Card[];
-  currentPlayer: number;
-  pendingCard: Card | null;
-  pendingSource: PendingSource;
-  targetScore: number;
-  finalRound: boolean;
-  endingPlayerId: string | null;
-  roundNumber: number;
-  roundHistory: RoundRecord[];
-  message: string;
-  clearPulse: number;
-  roundEndPulse: number;
-};
-
-const FULL_COUNTS: Record<number, number> = {
-  [-2]: 5,
-  [-1]: 10,
-  0: 15,
-  1: 10,
-  2: 10,
-  3: 10,
-  4: 10,
-  5: 10,
-  6: 10,
-  7: 10,
-  8: 10,
-  9: 10,
-  10: 10,
-  11: 10,
-  12: 10,
-};
-
-const STARTING_MESSAGE =
-  "Choose exactly two cards to reveal. Highest visible opening total takes the first turn.";
-
-const emptyGame: GameState = {
-  phase: "setup",
-  players: [],
-  deck: [],
-  discard: [],
-  currentPlayer: 0,
-  pendingCard: null,
-  pendingSource: null,
-  targetScore: 100,
-  finalRound: false,
-  endingPlayerId: null,
-  roundNumber: 1,
-  roundHistory: [],
-  message: "",
-  clearPulse: 0,
-  roundEndPulse: 0,
-};
-
-function shuffle<T>(items: T[]) {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
-}
-
-function createDeck() {
-  const cards: Card[] = [];
-  Object.entries(FULL_COUNTS).forEach(([rawValue, count]) => {
-    const value = Number(rawValue);
-    for (let i = 0; i < count; i += 1) {
-      cards.push({ id: `${value}-${i}-${Math.random().toString(36).slice(2)}`, value });
-    }
-  });
-  return shuffle(cards);
-}
-
-function makeGrid(deck: Card[]) {
-  const grid: Cell[] = [];
-  for (let i = 0; i < 12; i += 1) {
-    const card = deck.pop();
-    if (!card) throw new Error("Not enough cards to deal a GridClash 12 round.");
-    grid.push({ card, revealed: false });
-  }
-  return grid;
-}
-
-function revealRandomTwo(grid: Cell[]) {
-  const next = grid.map((cell) => ({ ...cell }));
-  shuffle(Array.from({ length: 12 }, (_, index) => index))
-    .slice(0, 2)
-    .forEach((index) => {
-      next[index] = { ...next[index], revealed: true };
-    });
-  return next;
-}
-
-function createRound(
-  aiCount: number,
-  targetScore: number,
-  roundNumber: number,
-  totals: Record<string, number> = {},
-  roundHistory: RoundRecord[] = [],
-): GameState {
-  const deck = createDeck();
-  const players: Player[] = [
-    {
-      id: "human",
-      name: "You",
-      isHuman: true,
-      grid: makeGrid(deck),
-      total: totals.human ?? 0,
-      rawRoundScore: 0,
-      roundScore: 0,
-      penalty: false,
-      finalTurnTaken: false,
-    },
-  ];
-
-  for (let i = 1; i <= aiCount; i += 1) {
-    const id = `ai-${i}`;
-    players.push({
-      id,
-      name: `AI ${i}`,
-      isHuman: false,
-      grid: revealRandomTwo(makeGrid(deck)),
-      total: totals[id] ?? 0,
-      rawRoundScore: 0,
-      roundScore: 0,
-      penalty: false,
-      finalTurnTaken: false,
-    });
-  }
-
-  const firstDiscard = deck.pop();
-  return {
-    ...emptyGame,
-    phase: "initialReveal",
-    players,
-    deck,
-    discard: firstDiscard ? [firstDiscard] : [],
-    targetScore,
-    roundNumber,
-    roundHistory,
-    message: STARTING_MESSAGE,
-  };
-}
 
 type CardPalette = { from: string; via: string; to: string; text: string };
 
@@ -227,321 +61,14 @@ function cardGradientStyle(value: number) {
   } as const;
 }
 
-function getCardLabel(value: number) {
-  return value > 0 ? `+${value}` : `${value}`;
-}
-
-function rowColumnIndexes(col: number) {
-  return [col, col + 4, col + 8];
-}
-
-function clonePlayers(players: Player[]) {
-  return players.map((player) => ({
-    ...player,
-    grid: player.grid.map((cell) => ({ ...cell, card: cell.card ? { ...cell.card } : null })),
-  }));
-}
-
-function rawScore(player: Player) {
-  return player.grid.reduce((total, cell) => total + (cell.card ? cell.card.value : 0), 0);
-}
-
-function visibleScore(player: Player) {
-  return player.grid.reduce(
-    (total, cell) => total + (cell.revealed && cell.card ? cell.card.value : 0),
-    0,
-  );
-}
-
-function unrevealedCount(player: Player) {
-  return player.grid.filter((cell) => cell.card && !cell.revealed).length;
-}
-
-function isFinished(player: Player) {
-  return player.grid.every((cell) => !cell.card || cell.revealed);
-}
-
-function revealAllGrid(grid: Cell[]) {
-  return grid.map((cell) => (cell.card ? { ...cell, revealed: true } : { ...cell }));
-}
-
-function clearCompletedColumns(player: Player) {
-  const next: Player = { ...player, grid: player.grid.map((cell) => ({ ...cell })) };
-  const columns: { col: number; value: number }[] = [];
-
-  for (let col = 0; col < 4; col += 1) {
-    const indexes = rowColumnIndexes(col);
-    const cells = indexes.map((index) => next.grid[index]);
-    if (!cells.every((cell) => cell.card && cell.revealed)) continue;
-    const value = cells[0].card?.value;
-    if (value === undefined) continue;
-    if (cells.every((cell) => cell.card?.value === value)) {
-      indexes.forEach((index) => {
-        next.grid[index] = { card: null, revealed: true, cleared: true };
-      });
-      columns.push({ col, value });
-    }
-  }
-  return { player: next, columns };
-}
-
-function drawFromDeck(deck: Card[], discard: Card[]) {
-  let nextDeck = [...deck];
-  let nextDiscard = [...discard];
-  if (nextDeck.length === 0 && nextDiscard.length > 1) {
-    const topDiscard = nextDiscard[nextDiscard.length - 1];
-    nextDeck = shuffle(nextDiscard.slice(0, -1));
-    nextDiscard = [topDiscard];
-  }
-  const card = nextDeck.pop() ?? null;
-  return { card, deck: nextDeck, discard: nextDiscard };
-}
-
-function countKnownCards(players: Player[], discard: Card[]) {
-  const counts: Record<number, number> = { ...FULL_COUNTS };
-  players.forEach((player) => {
-    player.grid.forEach((cell) => {
-      if (cell.revealed && cell.card) counts[cell.card.value] = Math.max(0, (counts[cell.card.value] ?? 0) - 1);
-    });
-  });
-  discard.forEach((card) => {
-    counts[card.value] = Math.max(0, (counts[card.value] ?? 0) - 1);
-  });
-  return counts;
-}
-
-function expectedDeckValue(players: Player[], discard: Card[]) {
-  const remaining = countKnownCards(players, discard);
-  let total = 0;
-  let count = 0;
-  Object.entries(remaining).forEach(([rawValue, amount]) => {
-    total += Number(rawValue) * amount;
-    count += amount;
-  });
-  return count === 0 ? 5 : total / count;
-}
-
-function estimatedScore(player: Player, ev: number) {
-  return player.grid.reduce((total, cell) => {
-    if (!cell.card) return total;
-    return total + (cell.revealed ? cell.card.value : ev);
-  }, 0);
-}
-
-function completionBonus(player: Player, index: number, value: number) {
-  const col = index % 4;
-  for (const cellIndex of rowColumnIndexes(col)) {
-    if (cellIndex === index) continue;
-    const cell = player.grid[cellIndex];
-    if (!cell.card || !cell.revealed || cell.card.value !== value) return 0;
-  }
-  if (value > 0) return value * 3 + 6;
-  if (value === 0) return 2;
-  return -6;
-}
-
-function bestReplacement(player: Player, value: number, ev: number, allPlayers: Player[]) {
-  const ownEstimate = estimatedScore(player, ev);
-  const opponentEstimates = allPlayers
-    .filter((candidate) => candidate.id !== player.id)
-    .map((candidate) => estimatedScore(candidate, ev));
-  const bestOpponent = opponentEstimates.length ? Math.min(...opponentEstimates) : ownEstimate;
-  const roundIsDangerous = unrevealedCount(player) <= 2 && ownEstimate > bestOpponent + 4;
-
-  return player.grid.reduce(
-    (best, cell, index) => {
-      if (!cell.card) return best;
-      const currentValue = cell.revealed ? cell.card.value : ev;
-      let improvement = currentValue - value + completionBonus(player, index, value);
-      if (roundIsDangerous && !cell.revealed) improvement -= 4.5;
-      if (cell.revealed && cell.card.value >= 8 && value <= 4) improvement += 1.5;
-      return improvement > best.improvement ? { index, improvement } : best;
-    },
-    { index: -1, improvement: Number.NEGATIVE_INFINITY },
-  );
-}
-
-function chooseRevealIndex(player: Player) {
-  const hidden = player.grid
-    .map((cell, index) => ({ cell, index }))
-    .filter(({ cell }) => cell.card && !cell.revealed);
-  if (hidden.length === 0) return -1;
-
-  const opportunities = hidden
-    .map(({ index }) => {
-      const visibleValues = rowColumnIndexes(index % 4)
-        .filter((cellIndex) => cellIndex !== index)
-        .map((cellIndex) => player.grid[cellIndex])
-        .filter((cell) => cell.card && cell.revealed)
-        .map((cell) => cell.card?.value ?? 99);
-      const hasPair = visibleValues.length === 2 && visibleValues[0] === visibleValues[1];
-      const score = hasPair && visibleValues[0] > 0 ? visibleValues[0] * 2 + 8 : visibleValues.length;
-      return { index, score };
-    })
-    .sort((a, b) => b.score - a.score);
-  const bestScore = opportunities[0].score;
-  const tied = opportunities.filter((item) => item.score === bestScore);
-  return tied[Math.floor(Math.random() * tied.length)].index;
-}
-
-function nextPlayerIndex(players: Player[], currentPlayer: number, finalRound: boolean, endingPlayerId: string | null) {
-  for (let offset = 1; offset <= players.length; offset += 1) {
-    const index = (currentPlayer + offset) % players.length;
-    const candidate = players[index];
-    if (finalRound && (candidate.id === endingPlayerId || candidate.finalTurnTaken)) continue;
-    return index;
-  }
-  return currentPlayer;
-}
-
-function scoreRound(state: GameState, players: Player[], message: string): GameState {
-  const revealedPlayers = players.map((player) => ({ ...player, grid: revealAllGrid(player.grid) }));
-  const rawScores = revealedPlayers.map((player) => ({ id: player.id, score: rawScore(player) }));
-  const endingRaw = rawScores.find((item) => item.id === state.endingPlayerId)?.score ?? 0;
-  const endingWasStrictlyLowest =
-    state.endingPlayerId !== null && rawScores.every((item) => item.id === state.endingPlayerId || endingRaw < item.score);
-
-  const scoredPlayers = revealedPlayers.map((player) => {
-    const raw = rawScores.find((item) => item.id === player.id)?.score ?? 0;
-    const penalty = player.id === state.endingPlayerId && !endingWasStrictlyLowest && raw > 0;
-    const applied = penalty ? raw * 2 : raw;
-    return {
-      ...player,
-      rawRoundScore: raw,
-      roundScore: applied,
-      penalty,
-      total: player.total + applied,
-      finalTurnTaken: false,
-    };
-  });
-
-  const record: RoundRecord = {
-    round: state.roundNumber,
-    endingPlayerId: state.endingPlayerId,
-    scores: scoredPlayers.map((player) => ({
-      playerId: player.id,
-      name: player.name,
-      raw: player.rawRoundScore,
-      applied: player.roundScore,
-      total: player.total,
-      penalty: player.penalty,
-    })),
-  };
-
-  const reachedTarget = scoredPlayers.some((player) => player.total >= state.targetScore);
-  return {
-    ...state,
-    phase: reachedTarget ? "gameOver" : "roundOver",
-    players: scoredPlayers,
-    pendingCard: null,
-    pendingSource: null,
-    finalRound: false,
-    roundHistory: [...state.roundHistory, record],
-    message: reachedTarget
-      ? "Target score reached. Lowest total wins the match."
-      : `${message} Round ${state.roundNumber} is complete. Review scores, then deal again.`,
-    roundEndPulse: state.roundEndPulse + 1,
-  };
-}
-
-function completeTurn(
-  state: GameState,
-  nextPlayers: Player[],
-  deck: Card[],
-  discard: Card[],
-  playerIndex: number,
-  message: string,
-  clearEvent?: ClearEvent,
-): GameState {
-  let finalRound = state.finalRound;
-  let endingPlayerId = state.endingPlayerId;
-  let nextMessage = message;
-
-  if (finalRound) nextPlayers[playerIndex] = { ...nextPlayers[playerIndex], finalTurnTaken: true };
-  if (!finalRound && isFinished(nextPlayers[playerIndex])) {
-    finalRound = true;
-    endingPlayerId = nextPlayers[playerIndex].id;
-    nextPlayers[playerIndex] = { ...nextPlayers[playerIndex], finalTurnTaken: true };
-    nextMessage = `${nextPlayers[playerIndex].name} revealed every remaining card. Each opponent gets one final turn.`;
-  }
-
-  const allFinalTurnsDone =
-    finalRound && nextPlayers.every((candidate) => candidate.id === endingPlayerId || candidate.finalTurnTaken);
-  const clearText = clearEvent
-    ? `${clearEvent.playerName} cleared column ${clearEvent.columns
-        .map((item) => `${item.col + 1} (${getCardLabel(item.value)})`)
-        .join(", ")}. `
-    : "";
-
-  const nextState: GameState = {
-    ...state,
-    phase: "chooseSource",
-    players: nextPlayers,
-    deck,
-    discard,
-    pendingCard: null,
-    pendingSource: null,
-    finalRound,
-    endingPlayerId,
-    message: `${clearText}${nextMessage}`,
-    clearPulse: clearEvent ? state.clearPulse + 1 : state.clearPulse,
-  };
-
-  if (allFinalTurnsDone) return scoreRound(nextState, nextPlayers, nextMessage);
-  return { ...nextState, currentPlayer: nextPlayerIndex(nextPlayers, playerIndex, finalRound, endingPlayerId) };
-}
-
-function replaceGridCard(player: Player, index: number, card: Card) {
-  const next: Player = { ...player, grid: player.grid.map((cell) => ({ ...cell })) };
-  const oldCard = next.grid[index].card;
-  next.grid[index] = { card, revealed: true };
-  const cleared = clearCompletedColumns(next);
-  return { player: cleared.player, oldCard, columns: cleared.columns };
-}
-
-function revealGridCard(player: Player, index: number) {
-  const next: Player = { ...player, grid: player.grid.map((cell) => ({ ...cell })) };
-  next.grid[index] = { ...next.grid[index], revealed: true };
-  const cleared = clearCompletedColumns(next);
-  return { player: cleared.player, columns: cleared.columns };
-}
-
-function determineStarter(players: Player[]) {
-  const sums = players.map((player, index) => ({
-    index,
-    sum: player.grid.reduce((total, cell) => total + (cell.revealed && cell.card ? cell.card.value : 0), 0),
-  }));
-  const highest = Math.max(...sums.map((item) => item.sum));
-  const tied = sums.filter((item) => item.sum === highest);
-  return tied[Math.floor(Math.random() * tied.length)].index;
-}
-
-function runAiTurn(state: GameState) {
-  const playerIndex = state.currentPlayer;
+function applyAiPlan(state: GameState, playerIndex: number, plan: AiTurnPlan): GameState {
   const players = clonePlayers(state.players);
   const player = players[playerIndex];
-  const ev = expectedDeckValue(players, state.discard);
-  const discardTop = state.discard[state.discard.length - 1] ?? null;
-  let useDiscard = false;
-  let reason = "";
-
-  if (discardTop) {
-    const discardPlan = bestReplacement(player, discardTop.value, ev, players);
-    const bonus = discardPlan.index >= 0 ? completionBonus(player, discardPlan.index, discardTop.value) : 0;
-    useDiscard =
-      discardTop.value <= 0 ||
-      bonus > 0 ||
-      (state.deck.length === 0 && state.discard.length === 1) ||
-      (discardTop.value <= 4 && discardPlan.improvement > -0.4) ||
-      discardPlan.improvement > Math.max(1.2, ev - discardTop.value + 0.5);
-    if (useDiscard) reason = bonus > 0 ? "to chase a column clear" : `because ${getCardLabel(discardTop.value)} beats the deck EV`;
-  }
-
-  if (useDiscard && discardTop) {
-    const card = discardTop;
+  if (plan.source === "discard") {
+    const top = state.discard[state.discard.length - 1];
+    if (!top) return state;
     const discard = state.discard.slice(0, -1);
-    const plan = bestReplacement(player, card.value, ev, players);
-    const replaced = replaceGridCard(player, plan.index === -1 ? 0 : plan.index, card);
+    const replaced = replaceGridCard(player, plan.replaceIndex, top);
     players[playerIndex] = replaced.player;
     const nextDiscard = replaced.oldCard ? [...discard, replaced.oldCard] : discard;
     return completeTurn(
@@ -550,26 +77,14 @@ function runAiTurn(state: GameState) {
       state.deck,
       nextDiscard,
       playerIndex,
-      `${player.name} took the discard ${getCardLabel(card.value)} ${reason}.`,
+      plan.reason,
       replaced.columns.length ? { playerName: player.name, columns: replaced.columns } : undefined,
     );
   }
-
   const drawn = drawFromDeck(state.deck, state.discard);
   if (!drawn.card) return { ...state, message: "The deck and discard pile are both empty. No action was taken." };
-
-  const card = drawn.card;
-  const plan = bestReplacement(player, card.value, ev, players);
-  const bonus = plan.index >= 0 ? completionBonus(player, plan.index, card.value) : 0;
-  const shouldReplace =
-    unrevealedCount(player) === 0 ||
-    card.value <= 0 ||
-    bonus > 0 ||
-    plan.improvement > 1.25 ||
-    (card.value <= 4 && plan.improvement > -0.8);
-
-  if (shouldReplace && plan.index >= 0) {
-    const replaced = replaceGridCard(player, plan.index, card);
+  if (plan.useDrawn) {
+    const replaced = replaceGridCard(player, plan.replaceIndex, drawn.card);
     players[playerIndex] = replaced.player;
     const nextDiscard = replaced.oldCard ? [...drawn.discard, replaced.oldCard] : drawn.discard;
     return completeTurn(
@@ -578,42 +93,26 @@ function runAiTurn(state: GameState) {
       drawn.deck,
       nextDiscard,
       playerIndex,
-      `${player.name} drew ${getCardLabel(card.value)} and used it to improve the grid.`,
+      plan.reason,
       replaced.columns.length ? { playerName: player.name, columns: replaced.columns } : undefined,
     );
   }
-
-  const revealIndex = chooseRevealIndex(player);
-  if (revealIndex === -1) {
-    const replaced = replaceGridCard(player, plan.index === -1 ? 0 : plan.index, card);
-    players[playerIndex] = replaced.player;
-    const nextDiscard = replaced.oldCard ? [...drawn.discard, replaced.oldCard] : drawn.discard;
-    return completeTurn(
-      state,
-      players,
-      drawn.deck,
-      nextDiscard,
-      playerIndex,
-      `${player.name} had no hidden cards and replaced a grid card.`,
-      replaced.columns.length ? { playerName: player.name, columns: replaced.columns } : undefined,
-    );
-  }
-
-  const revealed = revealGridCard(player, revealIndex);
+  const revealed = revealGridCard(player, plan.revealIndex);
   players[playerIndex] = revealed.player;
   return completeTurn(
     state,
     players,
     drawn.deck,
-    [...drawn.discard, card],
+    [...drawn.discard, drawn.card],
     playerIndex,
-    `${player.name} declined ${getCardLabel(card.value)} and revealed a hidden card instead.`,
+    plan.reason,
     revealed.columns.length ? { playerName: player.name, columns: revealed.columns } : undefined,
   );
 }
 
-function sortByTotal(players: Player[]) {
-  return [...players].sort((a, b) => a.total - b.total);
+function runAiTurn(state: GameState, level: AiLevel): GameState {
+  const plan = think(state, state.currentPlayer, level);
+  return applyAiPlan(state, state.currentPlayer, plan);
 }
 
 function CardTile({
@@ -635,8 +134,8 @@ function CardTile({
   const isFaceUp = valueOverride !== undefined || Boolean(cell?.revealed);
   const isCleared = cell?.cleared || (!card && cell);
   const sizeClass = compact
-    ? "h-12 w-8 text-sm sm:h-14 sm:w-10"
-    : "h-[clamp(4.4rem,16vw,6.8rem)] w-[clamp(3rem,11vw,4.7rem)] text-2xl sm:text-3xl";
+    ? "h-10 w-7 text-xs sm:h-12 sm:w-9"
+    : "h-[clamp(4.5rem,15vh,7.5rem)] w-[clamp(3rem,9vw,5rem)] text-3xl sm:text-4xl";
 
   if (isCleared) {
     return (
@@ -650,13 +149,18 @@ function CardTile({
       ? "absolute -inset-1.5 rounded-2xl bg-amber-300/90 blur-none animate-pulse shadow-[0_0_24px_rgba(252,211,77,0.9)]"
       : "";
 
+  const fancy = !compact;
+
   const frontFace = (
     <span
       style={card ? cardGradientStyle(card.value) : undefined}
       className={`absolute inset-0 flex items-center justify-center rounded-xl border font-black tracking-tight shadow-lg [backface-visibility:hidden] [transform:rotateY(180deg)] ${selected ? "border-amber-200 ring-2 ring-amber-300" : "border-white/40"} ${card ? "" : "bg-slate-700 text-white"}`}
     >
       <span className="absolute inset-1 rounded-lg border border-white/20" />
-      {card ? getCardLabel(card.value) : ""}
+      {fancy && card ? (
+        <span aria-hidden className="pointer-events-none absolute inset-0 rounded-xl" style={{ background: "linear-gradient(115deg, transparent 16%, rgba(255,255,255,0.28) 19.5%, transparent 26%, transparent 74%, rgba(255,255,255,0.15) 78.5%, transparent 85%)" }} />
+      ) : null}
+      <span style={fancy && card ? { textShadow: "0 1px 0 rgba(0,0,0,0.22), 0 2px 2px rgba(0,0,0,0.25), 0 4px 6px rgba(0,0,0,0.28), 0 8px 16px rgba(0,0,0,0.35)" } : undefined}>{card ? getCardLabel(card.value) : ""}</span>
     </span>
   );
 
@@ -702,15 +206,96 @@ function CardTile({
   );
 }
 
+function HelpModal({ onClose }: { onClose: () => void }) {
+  const rows = [
+    {
+      icon: <Crown className="h-4 w-4" />,
+      title: "Goal",
+      text: "Keep your grid score as low as possible. The match ends when a player reaches the target score — the lowest total wins.",
+    },
+    {
+      icon: <Layers className="h-4 w-4" />,
+      title: "Opening",
+      text: "Each player gets 12 face-down cards in a 4×3 grid. Reveal exactly two cards of your choice; the highest visible total takes the first turn.",
+    },
+    {
+      icon: <Zap className="h-4 w-4" />,
+      title: "Your turn",
+      text: "Draw from the deck or take the top card of the discard pile. The discard pile forces you to replace a grid card. Drawing lets you replace a grid card — or discard the drawn card and reveal one face-down card instead.",
+    },
+    {
+      icon: <Sparkles className="h-4 w-4" />,
+      title: "Discards feed opponents",
+      text: "The card you replace lands face-up on top of the discard pile — the next player may take it. Be careful not to hand them the card that completes one of their columns.",
+    },
+    {
+      icon: <Eye className="h-4 w-4" />,
+      title: "Column clears",
+      text: "When all three cards in a column are face-up and equal, the column is removed. Positive clears shrink your score; negative clears remove negative points.",
+    },
+    {
+      icon: <ClipboardList className="h-4 w-4" />,
+      title: "End of round",
+      text: "A round ends as soon as a player has revealed every card. Every other player gets one final turn, then scores are applied. If the player who ended the round is not the strictly lowest score and their raw score is positive, it is doubled.",
+    },
+    {
+      icon: <Trophy className="h-4 w-4" />,
+      title: "Scoring",
+      text: "Your score is the sum of your grid values — negative cards subtract. Low score wins.",
+    },
+    {
+      icon: <Undo2 className="h-4 w-4" />,
+      title: "Undo",
+      text: "Undo takes back your last move — but only while you have not gained an information advantage. Once you have revealed a face-down card (or replaced a face-down one), the move is locked in.",
+    },
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="How to play"
+    >
+      <div
+        className="max-h-[85vh] w-full max-w-xl overflow-auto rounded-[2rem] border border-white/10 bg-slate-950 p-6 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="flex items-center gap-3 text-2xl font-black"><HelpCircle className="h-6 w-6 text-cyan-300" /> How to play</h2>
+          <button type="button" onClick={onClose} className="rounded-full border border-white/10 p-2 text-white/70 transition hover:bg-white/10 hover:text-white" aria-label="Close instructions">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="mt-5 space-y-4">
+          {rows.map((row) => (
+            <div key={row.title} className="flex gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+              <span className="mt-0.5 shrink-0 text-cyan-200">{row.icon}</span>
+              <div>
+                <p className="font-black">{row.title}</p>
+                <p className="mt-1 text-sm leading-6 text-white/65">{row.text}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function GridClash12() {
-  const [settings, setSettings] = useState<SettingsState>({ aiCount: 3, targetScore: 100 });
+  const [settings, setSettings] = useState<SettingsState>({ aiCount: 3, targetScore: 100, difficulty: "hard" });
   const [game, setGame] = useState<GameState>(emptyGame);
   const [initialPicks, setInitialPicks] = useState<number[]>([]);
   const [scoreOpen, setScoreOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
-  // Snapshot saved right before the player commits to a draw/discard action,
-  // so a mis-click can be undone before any grid card is revealed.
-  const [undoSnapshot, setUndoSnapshot] = useState<GameState | null>(null);
+  // Snapshot of the state at the start of the human's current turn. Used for undo,
+  // which is only offered while the turn has not revealed any face-down card
+  // (peeking would be an information advantage).
+  const [history, setHistory] = useState<{ state: GameState; revealInfo: boolean } | null>(null);
+  const skipHistoryRef = useRef(false);
   const audioRef = useRef<AudioContext | null>(null);
 
   const currentPlayer = game.players[game.currentPlayer];
@@ -781,11 +366,26 @@ export default function GridClash12() {
       setGame((previous) => {
         const active = previous.players[previous.currentPlayer];
         if (previous.phase !== "chooseSource" || !active || active.isHuman) return previous;
-        return runAiTurn(previous);
+        return runAiTurn(previous, settings.difficulty);
       });
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [currentPlayer, game.phase, playSound]);
+  }, [currentPlayer, game.phase, playSound, settings.difficulty]);
+
+  // Snapshot the start of every human turn so a move that peeked at no face-down
+  // card can be undone. A restored state must never be re-snapshotted.
+  useEffect(() => {
+    const isHumanTurn = game.phase === "chooseSource" && game.players[game.currentPlayer]?.isHuman;
+    if (!isHumanTurn) {
+      skipHistoryRef.current = false;
+      return;
+    }
+    if (skipHistoryRef.current) {
+      skipHistoryRef.current = false;
+      return;
+    }
+    setHistory({ state: game, revealInfo: false });
+  }, [game.phase, game.currentPlayer]);
 
   useEffect(() => {
     if (game.clearPulse > 0) playSound("clear");
@@ -804,6 +404,7 @@ export default function GridClash12() {
   const startGame = () => {
     setInitialPicks([]);
     setScoreOpen(false);
+    setHistory(null);
     setGame(createRound(settings.aiCount, settings.targetScore, 1));
     playSound("shuffle");
   };
@@ -811,6 +412,7 @@ export default function GridClash12() {
   const startNextRound = () => {
     const totals = Object.fromEntries(game.players.map((player) => [player.id, player.total]));
     setInitialPicks([]);
+    setHistory(null);
     setGame(createRound(game.players.length - 1, game.targetScore, game.roundNumber + 1, totals, game.roundHistory));
     playSound("draw");
   };
@@ -818,6 +420,8 @@ export default function GridClash12() {
   const resetToSetup = () => {
     setInitialPicks([]);
     setScoreOpen(false);
+    setHelpOpen(false);
+    setHistory(null);
     setGame(emptyGame);
   };
 
@@ -853,11 +457,10 @@ export default function GridClash12() {
   };
 
   const undoTurnDecision = () => {
-    setGame((previous) => {
-      if (!undoSnapshot || previous.players[previous.currentPlayer]?.isHuman === false) return previous;
-      return undoSnapshot;
-    });
-    setUndoSnapshot(null);
+    if (!history || history.revealInfo) return;
+    skipHistoryRef.current = true;
+    setGame(history.state);
+    setHistory(null);
     playSound("flip");
   };
 
@@ -865,8 +468,6 @@ export default function GridClash12() {
     if (game.phase !== "chooseSource" || !currentPlayer?.isHuman) return;
     if (source === "discard") {
       if (!discardTop) return;
-      // Commit to taking the discard: no undo after this action.
-      setUndoSnapshot(null);
       setGame((previous) => ({
         ...previous,
         phase: "replaceChoice",
@@ -878,7 +479,6 @@ export default function GridClash12() {
       playSound("draw");
       return;
     }
-    setUndoSnapshot(game);
     setGame((previous) => {
       const drawn = drawFromDeck(previous.deck, previous.discard);
       if (!drawn.card) return { ...previous, message: "No cards are available to draw." };
@@ -897,14 +497,11 @@ export default function GridClash12() {
 
   const chooseReplaceAfterDeckDraw = () => {
     if (game.phase !== "drawDecision" || !game.pendingCard) return;
-    setUndoSnapshot(game);
     setGame((previous) => ({ ...previous, phase: "replaceChoice", message: "Choose the grid card to replace." }));
   };
 
   const discardDrawnAndReveal = () => {
     if (game.phase !== "drawDecision" || !game.pendingCard) return;
-    // Once the card is discarded to reveal a grid card, undo is no longer allowed.
-    setUndoSnapshot(null);
     setGame((previous) => ({
       ...previous,
       phase: "revealChoice",
@@ -916,6 +513,10 @@ export default function GridClash12() {
     playSound("draw");
   };
 
+  const markRevealInfo = () => {
+    setHistory((previous) => (previous ? { ...previous, revealInfo: true } : previous));
+  };
+
   const handleHumanCellClick = (index: number) => {
     if (!human) return;
     if (game.phase === "initialReveal") {
@@ -925,6 +526,7 @@ export default function GridClash12() {
     if (!currentPlayer?.isHuman || game.currentPlayer !== 0) return;
 
     if (game.phase === "replaceChoice" && game.pendingCard && human.grid[index].card) {
+      const replacedHidden = human.grid[index].card ? !human.grid[index].revealed : false;
       setGame((previous) => {
         const players = clonePlayers(previous.players);
         const card = previous.pendingCard;
@@ -942,7 +544,7 @@ export default function GridClash12() {
           replaced.columns.length ? { playerName: "You", columns: replaced.columns } : undefined,
         );
       });
-      setUndoSnapshot(null);
+      if (replacedHidden) markRevealInfo();
       playSound("replace");
       return;
     }
@@ -962,6 +564,7 @@ export default function GridClash12() {
           revealed.columns.length ? { playerName: "You", columns: revealed.columns } : undefined,
         );
       });
+      markRevealInfo();
       playSound("flip");
     }
   };
@@ -976,7 +579,7 @@ export default function GridClash12() {
   };
 
   const renderScorePanel = (modal = false) => (
-    <aside className={`${modal ? "fixed inset-y-0 right-0 z-50 w-full max-w-sm" : "hidden w-80 shrink-0 xl:block"} border-l border-white/10 bg-slate-950/95 p-5 text-white shadow-2xl backdrop-blur-xl`}>
+    <aside className={`${modal ? "fixed inset-y-0 right-0 z-50 w-full max-w-sm" : "hidden w-72 shrink-0 xl:block"} border-l border-white/10 bg-slate-950/95 p-5 text-white shadow-2xl backdrop-blur-xl`}>
       <div className="flex items-center justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-cyan-300">Permanent scoreboard</p>
@@ -1033,19 +636,20 @@ export default function GridClash12() {
 
   if (game.phase === "setup") {
     return (
-      <main className="min-h-screen overflow-hidden bg-slate-950 text-white">
+      <>
+        <main className="min-h-screen overflow-hidden bg-slate-950 text-white">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(34,211,238,0.22),transparent_30%),radial-gradient(circle_at_80%_0%,rgba(168,85,247,0.22),transparent_26%),linear-gradient(135deg,#07111f,#0f172a_45%,#020617)]" />
-        <section className="relative mx-auto flex min-h-screen w-full max-w-6xl flex-col justify-center px-5 py-10 sm:px-8">
+        <section className="relative mx-auto flex min-h-screen w-full max-w-6xl flex-col justify-center px-5 py-6 sm:px-8">
           <div className="max-w-3xl">
-            <div className="mb-8 inline-flex items-center gap-3 rounded-full border border-cyan-200/20 bg-cyan-200/10 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-lg shadow-cyan-950/20"><Sparkles className="h-4 w-4" /> Strategic browser edition</div>
-            <h1 className="text-6xl font-black tracking-tight sm:text-8xl">GridClash <span className="text-cyan-300">12</span></h1>
-            <p className="mt-5 max-w-2xl text-lg leading-8 text-slate-300 sm:text-xl">Race to keep your face-up grid as low as possible. Flip, swap, and clear matching columns across multiple rounds while a thinking AI table weighs the odds against you. Lowest total when someone hits the target loses the least — and wins the match.</p>
+            <div className="mb-5 inline-flex items-center gap-3 rounded-full border border-cyan-200/20 bg-cyan-200/10 px-4 py-2 text-sm font-semibold text-cyan-100 shadow-lg shadow-cyan-950/20"><Sparkles className="h-4 w-4" /> Strategic browser edition</div>
+            <h1 className="text-5xl font-black tracking-tight sm:text-7xl">GridClash <span className="text-cyan-300">12</span></h1>
+            <p className="mt-3 max-w-2xl text-base leading-7 text-slate-300 sm:text-lg">Race to keep your face-up grid as low as possible. Flip, swap, and clear matching columns across multiple rounds while a thinking AI table weighs the odds against you. Lowest total when someone hits the target loses the least — and wins the match.</p>
           </div>
 
-          <div className="mt-10 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
-            <div className="rounded-[2rem] border border-white/10 bg-white/[0.06] p-5 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-7">
+          <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
+            <div className="rounded-[2rem] border border-white/10 bg-white/[0.06] p-4 shadow-2xl shadow-black/25 backdrop-blur-xl sm:p-5">
               <div className="flex items-center gap-3 text-cyan-100"><Settings className="h-5 w-5" /><h2 className="text-lg font-black uppercase tracking-[0.25em]">Game setup</h2></div>
-              <div className="mt-7 space-y-7">
+              <div className="mt-5 space-y-5">
                 <label className="block">
                   <span className="mb-3 flex items-center justify-between text-sm font-semibold text-slate-200"><span className="flex items-center gap-2"><Users className="h-4 w-4" /> AI opponents</span><span className="text-cyan-200">{settings.aiCount}</span></span>
                   <input type="range" min={1} max={7} value={settings.aiCount} onChange={(event) => setSettings((current) => ({ ...current, aiCount: Number(event.target.value) }))} className="h-2 w-full accent-cyan-300" />
@@ -1055,27 +659,39 @@ export default function GridClash12() {
                   <p className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200"><Trophy className="h-4 w-4" /> Target score</p>
                   <div className="grid grid-cols-3 gap-3">
                     {[50, 100, 150].map((target) => (
-                      <button key={target} type="button" onClick={() => setSettings((current) => ({ ...current, targetScore: target }))} className={`rounded-2xl border px-4 py-4 text-lg font-black transition ${settings.targetScore === target ? "border-cyan-200 bg-cyan-200 text-slate-950 shadow-lg shadow-cyan-950/25" : "border-white/10 bg-white/5 text-white hover:bg-white/10"}`}>{target}</button>
+                      <button key={target} type="button" onClick={() => setSettings((current) => ({ ...current, targetScore: target }))} className={`rounded-2xl border px-4 py-3 text-lg font-black transition ${settings.targetScore === target ? "border-cyan-200 bg-cyan-200 text-slate-950 shadow-lg shadow-cyan-950/25" : "border-white/10 bg-white/5 text-white hover:bg-white/10"}`}>{target}</button>
                     ))}
                   </div>
                 </div>
 
-                <button type="button" onClick={startGame} className="group flex w-full items-center justify-center gap-3 rounded-2xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-6 py-5 text-lg font-black text-slate-950 shadow-2xl shadow-cyan-950/30 transition hover:scale-[1.02]">Deal round 1 <ChevronRight className="h-5 w-5 transition group-hover:translate-x-1" /></button>
+                <div>
+                  <p className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200"><Brain className="h-4 w-4" /> AI difficulty</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    {(["easy", "medium", "hard"] as const).map((difficulty) => (
+                      <button key={difficulty} type="button" onClick={() => setSettings((current) => ({ ...current, difficulty }))} className={`rounded-2xl border px-4 py-3 text-lg font-black transition ${settings.difficulty === difficulty ? "border-cyan-200 bg-cyan-200 text-slate-950 shadow-lg shadow-cyan-950/25" : "border-white/10 bg-white/5 text-white hover:bg-white/10"}`}>{difficulty === "easy" ? "Easy" : difficulty === "medium" ? "Medium" : "Hard"}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <button type="button" onClick={startGame} className="group flex w-full items-center justify-center gap-3 rounded-2xl bg-gradient-to-r from-cyan-300 to-emerald-300 px-6 py-4 text-lg font-black text-slate-950 shadow-2xl shadow-cyan-950/30 transition hover:scale-[1.02]">Deal round 1 <ChevronRight className="h-5 w-5 transition group-hover:translate-x-1" /></button>
+                <button type="button" onClick={() => setHelpOpen(true)} className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-6 py-3 text-base font-black text-white transition hover:bg-white/10"><HelpCircle className="h-5 w-5 text-cyan-200" /> How to play</button>
               </div>
             </div>
 
-            <div className="relative min-h-80 overflow-hidden rounded-[2rem] border border-white/10 bg-gradient-to-br from-emerald-500/20 via-cyan-500/10 to-violet-500/20 p-6 shadow-2xl shadow-black/20">
+            <div className="relative min-h-72 overflow-hidden rounded-[2rem] border border-white/10 bg-gradient-to-br from-emerald-500/20 via-cyan-500/10 to-violet-500/20 p-6 shadow-2xl shadow-black/20">
               <div className="absolute inset-x-10 top-8 grid grid-cols-4 gap-3 opacity-80 rotate-[-8deg]">
                 {[-2, 0, 4, 9, -1, 2, 7, 12].map((value, index) => <CardTile key={`${value}-${index}`} valueOverride={value} compact />)}
               </div>
               <div className="absolute bottom-6 left-6 right-6 rounded-3xl border border-white/10 bg-slate-950/70 p-5 backdrop-blur-md">
-                <div className="flex items-center gap-3 text-emerald-200"><Brain className="h-5 w-5" /><p className="font-black">AI heuristic engine</p></div>
-                <p className="mt-2 text-sm leading-6 text-slate-300">Opponents take low discards fast, target high revealed cards, estimate the unseen deck, pursue column clears, and avoid risky early finishes.</p>
+                <div className="flex items-center gap-3 text-emerald-200"><Brain className="h-5 w-5" /><p className="font-black">AI strategy engine</p></div>
+                <p className="mt-2 text-sm leading-6 text-slate-300">Opponents count the deck, chase column clears, avoid risky finishes, and run Monte-Carlo simulations to weigh every move. Hard plays a much deeper game than Easy.</p>
               </div>
             </div>
           </div>
         </section>
       </main>
+      {helpOpen ? <HelpModal onClose={() => setHelpOpen(false)} /> : null}
+      </>
     );
   }
 
@@ -1087,101 +703,111 @@ export default function GridClash12() {
     <main className="min-h-screen bg-slate-950 text-white">
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_50%_-10%,rgba(34,211,238,0.25),transparent_28%),radial-gradient(circle_at_20%_90%,rgba(16,185,129,0.18),transparent_24%),linear-gradient(135deg,#020617,#0f172a_45%,#052e2b)]" />
       <div className="relative flex min-h-screen">
-        <section className="flex min-w-0 flex-1 flex-col px-3 py-4 sm:px-5 lg:px-8">
-          <header className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-white/10 bg-white/[0.05] px-4 py-3 backdrop-blur-xl">
+        <section className="flex min-w-0 flex-1 flex-col px-3 py-3 sm:px-5 lg:px-6">
+          <header className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-white/10 bg-white/[0.05] px-4 py-2.5 backdrop-blur-xl">
             <div className="flex items-center gap-3">
               <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-cyan-200 text-slate-950 shadow-lg shadow-cyan-950/20"><Sparkles className="h-6 w-6" /></div>
               <div><p className="text-xl font-black tracking-tight">GridClash <span className="text-cyan-300">12</span></p><p className="text-xs uppercase tracking-[0.25em] text-cyan-200">Round {game.roundNumber}</p></div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              {history && !history.revealInfo ? (
+                <button type="button" onClick={undoTurnDecision} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 hover:text-white" aria-label="Undo your last move">
+                  <Undo2 className="h-4 w-4" /> Undo
+                </button>
+              ) : null}
               <button type="button" onClick={() => setSoundEnabled((enabled) => !enabled)} className="rounded-2xl border border-white/10 bg-white/5 p-3 text-white/75 transition hover:bg-white/10 hover:text-white" aria-label="Toggle sound">{soundEnabled ? <Volume2 className="h-5 w-5" /> : <VolumeX className="h-5 w-5" />}</button>
+              <button type="button" onClick={() => setHelpOpen(true)} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 hover:text-white"><HelpCircle className="h-4 w-4" /> How to play</button>
               <button type="button" onClick={() => setScoreOpen(true)} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 hover:text-white xl:hidden"><Menu className="h-4 w-4" /> Scores</button>
               <button type="button" onClick={resetToSetup} className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 hover:text-white"><RotateCcw className="h-4 w-4" /> New game</button>
             </div>
           </header>
 
-          <div className="mt-4 grid flex-1 gap-4 xl:grid-rows-[auto_1fr_auto]">
-            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              {game.players.slice(1).map((player) => (
-                <div key={player.id} className={`rounded-3xl border p-3 transition ${currentPlayer?.id === player.id && game.phase === "chooseSource" ? "border-cyan-200/70 bg-cyan-200/10 shadow-lg shadow-cyan-950/30" : "border-white/10 bg-white/[0.04]"}`}>
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <div><p className="flex items-center gap-2 text-sm font-black"><Brain className="h-4 w-4 text-cyan-200" /> {player.name}</p><p className="text-xs text-white/50">Visible {visibleScore(player)} | Hidden {unrevealedCount(player)} | Total {player.total}</p></div>
-                    {game.endingPlayerId === player.id ? <Crown className="h-5 w-5 text-amber-300" /> : null}
+          <div className="mt-3 grid flex-1 min-h-0 gap-3 xl:grid-cols-[1.5fr_1fr]">
+            <div className="order-1 flex min-h-0 flex-col gap-3">
+              <section className="rounded-[2rem] border border-white/10 bg-white/[0.06] p-3 shadow-2xl shadow-black/20 backdrop-blur-xl sm:p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div><p className="flex items-center gap-2 text-lg font-black">You {game.endingPlayerId === "human" ? <Crown className="h-4 w-4 text-amber-300" /> : null}</p><p className="text-xs text-white/55">Visible {human ? visibleScore(human) : 0} | Hidden {human ? unrevealedCount(human) : 0} | Match total {human?.total ?? 0}</p></div>
+                  {game.phase === "initialReveal" ? <button type="button" onClick={confirmInitialReveal} disabled={initialPicks.length !== 2} className="rounded-2xl bg-cyan-200 px-5 py-3 text-sm font-black text-slate-950 transition enabled:hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-40">Reveal {initialPicks.length}/2 and start</button> : null}
+                  {game.phase === "roundOver" ? <button type="button" onClick={startNextRound} className="rounded-2xl bg-cyan-200 px-5 py-3 text-sm font-black text-slate-950 transition hover:bg-cyan-100">Deal next round</button> : null}
+                  {game.phase === "gameOver" ? <div className="flex items-center gap-3 rounded-2xl bg-amber-300 px-5 py-3 font-black text-slate-950"><Trophy className="h-5 w-5" /> {winner?.name} wins</div> : null}
+                </div>
+
+                {game.phase === "initialReveal" ? (
+                  <div className="mx-auto mb-3 flex max-w-[22rem] items-center gap-3 rounded-2xl border border-amber-200/40 bg-amber-200/10 px-4 py-2.5 text-sm font-bold text-amber-100 sm:max-w-[28rem]">
+                    <Eye className="h-5 w-5 shrink-0" /> Choose exactly two face-down cards to reveal. The highest visible total takes the first turn.
                   </div>
-                  <div className="grid grid-cols-4 gap-1.5">{player.grid.map((cell, index) => <CardTile key={`${player.id}-${index}-${cell.card?.id ?? "clear"}`} cell={cell} compact />)}</div>
+                ) : null}
+
+                <div className="mx-auto grid max-w-[26rem] grid-cols-4 justify-center gap-2 sm:max-w-[36rem] sm:gap-3">
+                  {human?.grid.map((cell, index) => (
+                    <CardTile key={`human-${index}-${cell.card?.id ?? "clear"}`} cell={cell} active={humanCanTarget(index)} selected={game.phase === "initialReveal" && initialPicks.includes(index)} onClick={humanCanTarget(index) ? () => handleHumanCellClick(index) : undefined} />
+                  ))}
+                </div>
+              </section>
+
+              <section className="grid min-h-0 items-center gap-3 lg:grid-cols-[1fr_auto_1fr]">
+                <div className="order-2 rounded-3xl border border-white/10 bg-white/[0.05] p-3 backdrop-blur-xl lg:order-1">
+                  <div className="flex items-start gap-3"><div className="rounded-2xl bg-cyan-200/10 p-2 text-cyan-200">{game.finalRound ? <Zap className="h-5 w-5" /> : <Eye className="h-5 w-5" />}</div><div><p className="text-xs uppercase tracking-[0.25em] text-cyan-200">Table status</p><p className="mt-1 text-lg font-black">{game.phase === "initialReveal" ? "Opening reveal" : game.phase === "roundOver" ? "Round complete" : game.phase === "gameOver" ? "Match complete" : `${currentPlayer?.name ?? "Player"}'s turn`}</p><p className="mt-1 text-sm leading-5 text-slate-300">{game.message}</p></div></div>
+                </div>
+
+                <div className="order-1 flex items-center justify-center gap-3 lg:order-2">
+                  <button type="button" onClick={() => drawSource("deck")} disabled={!canDrawFromDeck} className={`group relative flex h-24 w-20 flex-col items-center justify-center rounded-2xl border transition sm:h-28 sm:w-24 ${canDrawFromDeck ? "border-cyan-200 bg-cyan-200/10 shadow-2xl shadow-cyan-950/40 hover:-translate-y-1" : "border-white/10 bg-white/[0.05] opacity-80"}`}>
+                    <span className="absolute inset-2 rounded-xl border border-white/10 bg-gradient-to-br from-slate-950 via-sky-950 to-indigo-950" /><Layers className="relative h-7 w-7 text-cyan-200" /><span className="relative mt-1.5 text-xs font-bold uppercase tracking-[0.2em] text-white/70">Draw</span><span className="relative text-sm text-white/45">{game.deck.length} cards</span>
+                  </button>
+                  <button type="button" onClick={() => drawSource("discard")} disabled={!canChoosePile || !discardTop} className={`relative flex h-24 w-20 flex-col items-center justify-center rounded-2xl border transition sm:h-28 sm:w-24 ${canChoosePile && discardTop ? "border-amber-200 bg-amber-200/10 shadow-2xl shadow-amber-950/30 hover:-translate-y-1" : "border-white/10 bg-white/[0.05] opacity-80"}`}>
+                    {discardTop ? <CardTile valueOverride={discardTop.value} /> : <Shuffle className="h-7 w-7 text-white/40" />}<span className="absolute bottom-2 text-xs font-bold uppercase tracking-[0.2em] text-white/70">Discard</span>
+                  </button>
+                </div>
+
+                <div className="order-3 rounded-3xl border border-white/10 bg-white/[0.05] p-3 backdrop-blur-xl">
+                  {game.pendingCard ? (
+                    <div className="flex items-center gap-3">
+                      {game.phase === "drawDecision" ? (
+                        <button type="button" onClick={chooseReplaceAfterDeckDraw} className="shrink-0 transition hover:-translate-y-1" aria-label="Use this card to replace a grid card">
+                          <CardTile valueOverride={game.pendingCard.value} />
+                        </button>
+                      ) : (
+                        <CardTile valueOverride={game.pendingCard.value} />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs uppercase tracking-[0.25em] text-amber-200">Drawn card</p>
+                        <p className="mt-0.5 text-xl font-black">{getCardLabel(game.pendingCard.value)}</p>
+                        {game.phase === "drawDecision" ? (
+                          <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
+                            <button type="button" onClick={chooseReplaceAfterDeckDraw} className="rounded-2xl bg-cyan-200 px-3 py-2 text-sm font-black text-slate-950 transition hover:bg-cyan-100">Replace</button>
+                            <button type="button" onClick={discardDrawnAndReveal} className="rounded-2xl border border-white/10 bg-white/10 px-3 py-2 text-sm font-black text-white transition hover:bg-white/15">Discard & reveal</button>
+                          </div>
+                        ) : (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                            <p className="text-sm text-white/60">Select a target in your grid.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 text-sm text-white/60"><Sparkles className="h-5 w-5 text-cyan-200" /> Draw pile gives you a choice. Discard pile forces a replacement.</div>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <section className="order-2 grid min-h-0 content-start gap-3 sm:grid-cols-2">
+              {game.players.slice(1).map((player) => (
+                <div key={player.id} className={`rounded-3xl border p-2.5 transition ${currentPlayer?.id === player.id && game.phase === "chooseSource" ? "border-cyan-200/70 bg-cyan-200/10 shadow-lg shadow-cyan-950/30" : "border-white/10 bg-white/[0.04]"}`}>
+                  <div className="mb-1.5 flex items-center justify-between gap-3">
+                    <div><p className="flex items-center gap-2 text-xs font-black"><Brain className="h-3.5 w-3.5 text-cyan-200" /> {player.name}</p><p className="text-[11px] text-white/50">Visible {visibleScore(player)} | Hidden {unrevealedCount(player)} | Total {player.total}</p></div>
+                    {game.endingPlayerId === player.id ? <Crown className="h-4 w-4 text-amber-300" /> : null}
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">{player.grid.map((cell, index) => <CardTile key={`${player.id}-${index}-${cell.card?.id ?? "clear"}`} cell={cell} compact />)}</div>
                 </div>
               ))}
-            </section>
-
-            <section className="grid min-h-[18rem] items-center gap-4 lg:grid-cols-[1fr_auto_1fr]">
-              <div className="order-2 rounded-3xl border border-white/10 bg-white/[0.05] p-4 backdrop-blur-xl lg:order-1">
-                <div className="flex items-start gap-3"><div className="rounded-2xl bg-cyan-200/10 p-3 text-cyan-200">{game.finalRound ? <Zap className="h-5 w-5" /> : <Eye className="h-5 w-5" />}</div><div><p className="text-xs uppercase tracking-[0.25em] text-cyan-200">Table status</p><p className="mt-2 text-lg font-black">{game.phase === "initialReveal" ? "Opening reveal" : game.phase === "roundOver" ? "Round complete" : game.phase === "gameOver" ? "Match complete" : `${currentPlayer?.name ?? "Player"}'s turn`}</p><p className="mt-2 text-sm leading-6 text-slate-300">{game.message}</p></div></div>
-              </div>
-
-              <div className="order-1 flex items-center justify-center gap-4 lg:order-2">
-                <button type="button" onClick={() => drawSource("deck")} disabled={!canDrawFromDeck} className={`group relative flex h-32 w-24 flex-col items-center justify-center rounded-2xl border transition sm:h-40 sm:w-28 ${canDrawFromDeck ? "border-cyan-200 bg-cyan-200/10 shadow-2xl shadow-cyan-950/40 hover:-translate-y-1" : "border-white/10 bg-white/[0.05] opacity-80"}`}>
-                  <span className="absolute inset-2 rounded-xl border border-white/10 bg-gradient-to-br from-slate-950 via-sky-950 to-indigo-950" /><Layers className="relative h-8 w-8 text-cyan-200" /><span className="relative mt-2 text-xs font-bold uppercase tracking-[0.2em] text-white/70">Draw</span><span className="relative text-sm text-white/45">{game.deck.length} cards</span>
-                </button>
-                <button type="button" onClick={() => drawSource("discard")} disabled={!canChoosePile || !discardTop} className={`relative flex h-32 w-24 flex-col items-center justify-center rounded-2xl border transition sm:h-40 sm:w-28 ${canChoosePile && discardTop ? "border-amber-200 bg-amber-200/10 shadow-2xl shadow-amber-950/30 hover:-translate-y-1" : "border-white/10 bg-white/[0.05] opacity-80"}`}>
-                  {discardTop ? <CardTile valueOverride={discardTop.value} /> : <Shuffle className="h-8 w-8 text-white/40" />}<span className="absolute bottom-2 text-xs font-bold uppercase tracking-[0.2em] text-white/70">Discard</span>
-                </button>
-              </div>
-
-              <div className="order-3 rounded-3xl border border-white/10 bg-white/[0.05] p-4 backdrop-blur-xl">
-                {game.pendingCard ? (
-                  <div className="flex items-center gap-4">
-                    {game.phase === "drawDecision" ? (
-                      <button type="button" onClick={chooseReplaceAfterDeckDraw} className="shrink-0 transition hover:-translate-y-1" aria-label="Use this card to replace a grid card">
-                        <CardTile valueOverride={game.pendingCard.value} />
-                      </button>
-                    ) : (
-                      <CardTile valueOverride={game.pendingCard.value} />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs uppercase tracking-[0.25em] text-amber-200">Drawn card</p>
-                      <p className="mt-1 text-2xl font-black">{getCardLabel(game.pendingCard.value)}</p>
-                      {game.phase === "drawDecision" ? (
-                        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
-                          <button type="button" onClick={chooseReplaceAfterDeckDraw} className="rounded-2xl bg-cyan-200 px-4 py-3 text-sm font-black text-slate-950 transition hover:bg-cyan-100">Replace</button>
-                          <button type="button" onClick={discardDrawnAndReveal} className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 text-sm font-black text-white transition hover:bg-white/15">Discard and reveal</button>
-                        </div>
-                      ) : (
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <p className="text-sm text-white/60">Select a target in your grid.</p>
-                          {undoSnapshot && game.pendingSource === "deck" ? (
-                            <button type="button" onClick={undoTurnDecision} className="inline-flex items-center gap-1 rounded-xl border border-white/10 bg-white/10 px-3 py-2 text-xs font-black text-white transition hover:bg-white/15">
-                              <RotateCcw className="h-3.5 w-3.5" /> Undo
-                            </button>
-                          ) : null}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-3 text-sm text-white/60"><Sparkles className="h-5 w-5 text-cyan-200" /> Draw pile gives you a choice. Discard pile forces a replacement.</div>
-                )}
-              </div>
-            </section>
-
-            <section className="rounded-[2rem] border border-white/10 bg-white/[0.06] p-4 shadow-2xl shadow-black/20 backdrop-blur-xl sm:p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div><p className="flex items-center gap-2 text-xl font-black">You {game.endingPlayerId === "human" ? <Crown className="h-5 w-5 text-amber-300" /> : null}</p><p className="text-sm text-white/55">Visible {human ? visibleScore(human) : 0} | Hidden {human ? unrevealedCount(human) : 0} | Match total {human?.total ?? 0}</p></div>
-                {game.phase === "initialReveal" ? <button type="button" onClick={confirmInitialReveal} disabled={initialPicks.length !== 2} className="rounded-2xl bg-cyan-200 px-5 py-3 text-sm font-black text-slate-950 transition enabled:hover:bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-40">Reveal {initialPicks.length}/2 and start</button> : null}
-                {game.phase === "roundOver" ? <button type="button" onClick={startNextRound} className="rounded-2xl bg-cyan-200 px-5 py-3 text-sm font-black text-slate-950 transition hover:bg-cyan-100">Deal next round</button> : null}
-                {game.phase === "gameOver" ? <div className="flex items-center gap-3 rounded-2xl bg-amber-300 px-5 py-3 font-black text-slate-950"><Trophy className="h-5 w-5" /> {winner?.name} wins</div> : null}
-              </div>
-
-              <div className="mx-auto grid max-w-[22rem] grid-cols-4 justify-center gap-2 sm:max-w-[28rem] sm:gap-3">
-                {human?.grid.map((cell, index) => (
-                  <CardTile key={`human-${index}-${cell.card?.id ?? "clear"}`} cell={cell} active={humanCanTarget(index)} selected={game.phase === "initialReveal" && initialPicks.includes(index)} onClick={humanCanTarget(index) ? () => handleHumanCellClick(index) : undefined} />
-                ))}
-              </div>
             </section>
           </div>
         </section>
         {renderScorePanel(false)}
         {scoreOpen ? renderScorePanel(true) : null}
       </div>
+      {helpOpen ? <HelpModal onClose={() => setHelpOpen(false)} /> : null}
     </main>
   );
 }
